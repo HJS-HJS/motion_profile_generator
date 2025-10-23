@@ -1,3 +1,121 @@
+네, 가능합니다. Y축 레이블을 그릴 때 현재 보이는 영역(rect) 대신, 활성화된 모터의 yMin과 yMax 값을 기준으로 레이블 위치와 텍스트를 계산하도록 수정할 수 있습니다. 이렇게 하면 Y축 스케일이 모터의 실제 값 범위를 반영하게 됩니다.
+grapheditorview.cpp 파일의 drawBackground 함수 내부에서 Y축 레이블을 그리는 부분을 아래와 같이 수정하세요.
+grapheditorview.cpp 수정
+// grapheditorview.cpp
+
+#include "grapheditorview.h"
+// ... (다른 include들) ...
+#include <QTransform>
+#include <QPainter>
+#include <QtGlobal> // qAbs 사용
+
+// ... (생성자 및 다른 함수들) ...
+
+// Y축 레이블 로직 수정
+void GraphEditorView::drawBackground(QPainter* painter, const QRectF& rect) {
+    QGraphicsView::drawBackground(painter, rect);
+    // --- 그리드 라인 그리기 (기존과 동일) ---
+    QPen gridPen(QColor(220, 220, 220), 0);
+    gridPen.setCosmetic(true);
+    painter->setPen(gridPen);
+    double left_x = qFloor(rect.left() / m_gridSizeX) * m_gridSizeX;
+    for (double x = left_x; x < rect.right(); x += m_gridSizeX) {
+        painter->drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
+    }
+    double top_y = qFloor(rect.top() / m_gridSizeY) * m_gridSizeY;
+    for (double y = top_y; y < rect.bottom(); y += m_gridSizeY) {
+        painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
+    }
+    // --- 축선 그리기 (기존과 동일) ---
+    QPen axisPen(QColor(180, 180, 180), 0);
+    axisPen.setCosmetic(true);
+    painter->setPen(axisPen);
+    painter->drawLine(QPointF(0, rect.top()), QPointF(0, rect.bottom())); // Y축
+    painter->drawLine(QPointF(rect.left(), 0), QPointF(rect.right(), 0)); // X축
+
+
+    painter->save();
+    painter->scale(1, -1); // Y축 반전
+
+    painter->setPen(QPen(Qt::black));
+    QFont font = painter->font();
+
+    qreal currentScaleY = transform().m22();
+    qreal scaleFactor = qAbs(currentScaleY) > 1e-6 ? 1.0 / qAbs(currentScaleY) : 1.0;
+    font.setPointSizeF(8 * scaleFactor);
+    painter->setFont(font);
+
+    MotorProfile* activeProfile = m_document ? m_document->activeProfile() : nullptr;
+
+    // --- X축 레이블 (기존과 동일) ---
+    double xLabelInterval = 0.5; // 500ms
+    double startXLabel = qFloor(rect.left() / xLabelInterval) * xLabelInterval;
+    for (double x = startXLabel; x < rect.right(); x += xLabelInterval) {
+        QString xLabel = QString::number(x, 'f', (qAbs(x - qRound(x)) < 1e-3) ? 0 : 1) + "s";
+        if (qAbs(x) > 1e-3 || qAbs(xLabelInterval - (qAbs(rect.left()) + qAbs(rect.right()))) < 1e-3) {
+             QRectF textRect(x - 50 * scaleFactor, 2 * scaleFactor, 100 * scaleFactor, 20 * scaleFactor);
+             painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, xLabel);
+        }
+    }
+
+    // --- Y축 레이블 (수정된 로직) ---
+    if (activeProfile) {
+        double yMin_real = activeProfile->yMin();
+        double yMax_real = activeProfile->yMax();
+        double range_real = yMax_real - yMin_real;
+
+        // 표시할 레이블 개수 (예: 11개 -> 10칸)
+        const int numLabels = 11;
+        // 실제 값 기준 레이블 간격
+        double step_real = (qAbs(range_real) > 1e-6) ? range_real / (numLabels - 1) : 10.0;
+
+        for (int i = 0; i < numLabels; ++i) {
+            // 1. 실제 Y 값 계산
+            double y_real = yMin_real + i * step_real;
+            // 2. 실제 Y 값을 씬(Scene) Y 좌표로 변환
+            double y_scene = activeProfile->getNormalizedY(y_real);
+
+            QString label = QString::number(y_real, 'f', 1);
+
+            // 0 값 근처의 레이블은 겹치지 않도록 건너뛰기 (선택적)
+            if (qAbs(y_real) < 1e-3 && qAbs(yMin_real) > 1e-3 && qAbs(yMax_real) > 1e-3) {
+                 continue; // Min/Max가 0이 아닐 때만 0 레이블 생략
+            }
+
+            // 3. 변환된 씬 좌표를 사용하여 텍스트 그리기
+            QRectF textRect(2 * scaleFactor, -y_scene - 10 * scaleFactor, 50 * scaleFactor, 20 * scaleFactor);
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, label);
+        }
+    } else {
+        // 활성 모터가 없을 경우 (기존 방식: 씬 좌표 기준)
+        double yLabelInterval = m_gridSizeY;
+        double startYLabel = qFloor(rect.top() / yLabelInterval) * yLabelInterval;
+        for (double y_scene = startYLabel; y_scene < rect.bottom(); y_scene += yLabelInterval) {
+            if (qAbs(y_scene) > 1e-3 || qAbs(yLabelInterval - (qAbs(rect.top()) + qAbs(rect.bottom()))) < 1e-3) {
+                 QString label = QString::number(y_scene);
+                 QRectF textRect(2 * scaleFactor, -y_scene - 10 * scaleFactor, 50 * scaleFactor, 20 * scaleFactor);
+                 painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, label);
+            }
+        }
+    }
+
+    painter->restore();
+}
+
+// ... (파일의 나머지 부분은 변경 없음) ...
+
+수정 설명:
+ * 활성 모터 확인: if (activeProfile) 블록을 추가하여 활성 모터가 있을 때만 새 로직을 사용합니다.
+ * 실제 값 범위 가져오기: yMin_real, yMax_real 변수에 실제 최소/최대값을 저장합니다.
+ * 레이블 개수 및 간격 계산: numLabels (표시할 레이블 총 개수)를 정의하고, 이를 기준으로 실제 값 간격(step_real)을 계산합니다. (여기서는 11개 레이블 = 10칸 간격으로 설정)
+ * 반복문: 0부터 numLabels - 1까지 반복하며 각 레이블의 실제 값(y_real)을 계산합니다.
+ * 좌표 변환: 계산된 y_real 값을 activeProfile->getNormalizedY(y_real)를 사용해 씬 좌표(y_scene)로 변환합니다.
+ * 텍스트 그리기: 변환된 y_scene 좌표를 사용하여 painter->drawText 함수로 실제 값(label)을 그립니다. 0 근처 레이블 겹침 방지 로직도 추가했습니다.
+ * 활성 모터 없을 때: else 블록에서 기존의 씬 좌표 기준 레이블 로직을 유지합니다.
+
+
+
+
 네, 4가지 요청 사항을 반영하여 코드를 수정하겠습니다.
  * 모터 변경 시 Y축 레이블 갱신: grapheditorview.cpp의 setDocument 함수에 activeMotorChanged 시그널과 update() 슬롯 연결 코드가 이미 있으므로, 모터가 변경되면 자동으로 drawBackground가 호출되어 레이블이 갱신됩니다. (추가 수정 필요 없음)
  * 줌/팬 시 레이블 갱신: QGraphicsView는 줌/팬 시 자동으로 drawBackground를 호출하므로 레이블이 갱신됩니다. (추가 수정 필요 없음)
