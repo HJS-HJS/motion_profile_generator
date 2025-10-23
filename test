@@ -1,3 +1,207 @@
+네, 4가지 요청 사항을 반영하여 코드를 수정하겠습니다.
+ * 모터 변경 시 Y축 레이블 갱신: grapheditorview.cpp의 setDocument 함수에 activeMotorChanged 시그널과 update() 슬롯 연결 코드가 이미 있으므로, 모터가 변경되면 자동으로 drawBackground가 호출되어 레이블이 갱신됩니다. (추가 수정 필요 없음)
+ * 줌/팬 시 레이블 갱신: QGraphicsView는 줌/팬 시 자동으로 drawBackground를 호출하므로 레이블이 갱신됩니다. (추가 수정 필요 없음)
+ * 레이블 글자 크기 고정: grapheditorview.cpp의 drawBackground 함수에서 뷰의 현재 스케일(확대/축소 비율)을 얻어와 폰트 크기를 동적으로 조절하여 화면상 크기가 일정하게 보이도록 수정합니다.
+ * 최대 기울기 제약조건 적용: motionmodels.cpp의 MotorProfile::checkAllNodes 함수에 기울기 검사 및 노드 Y좌표 조정 로직을 추가합니다. 기울기는 이전 노드를 기준으로 계산하며, max_slope를 초과하면 현재 노드의 Y값을 조정합니다.
+1. grapheditorview.cpp (수정)
+drawBackground 함수를 수정하여 글자 크기를 고정하고, checkAllNodes 함수에서 기울기 제한 로직을 추가합니다.
+// grapheditorview.cpp
+
+#include "grapheditorview.h"
+// ... (다른 include들) ...
+#include <QTransform>
+#include <QPainter> // QPainter 사용을 위해 명시적 include (선택적)
+
+// ... (생성자 및 다른 함수들) ...
+
+// 3번: 레이블 글자 크기 고정
+void GraphEditorView::drawBackground(QPainter* painter, const QRectF& rect) {
+    QGraphicsView::drawBackground(painter, rect);
+    // --- 그리드 라인 그리기 (기존과 동일) ---
+    QPen gridPen(QColor(220, 220, 220), 0);
+    gridPen.setCosmetic(true);
+    painter->setPen(gridPen);
+    double left_x = qFloor(rect.left() / m_gridSizeX) * m_gridSizeX;
+    for (double x = left_x; x < rect.right(); x += m_gridSizeX) {
+        painter->drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
+    }
+    double top_y = qFloor(rect.top() / m_gridSizeY) * m_gridSizeY;
+    for (double y = top_y; y < rect.bottom(); y += m_gridSizeY) {
+        painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
+    }
+    // --- 축선 그리기 (기존과 동일) ---
+    QPen axisPen(QColor(180, 180, 180), 0);
+    axisPen.setCosmetic(true);
+    painter->setPen(axisPen);
+    painter->drawLine(QPointF(0, rect.top()), QPointF(0, rect.bottom())); // Y축
+    painter->drawLine(QPointF(rect.left(), 0), QPointF(rect.right(), 0)); // X축
+
+
+    painter->save();
+    painter->scale(1, -1); // Y축 반전
+
+    painter->setPen(QPen(Qt::black));
+    QFont font = painter->font();
+
+    // 3번: 현재 뷰의 스케일(Y축 기준)을 얻어와 폰트 크기 조정
+    qreal currentScaleY = transform().m22(); // Y 스케일 값 (반전으로 음수일 수 있음)
+    qreal scaleFactor = qAbs(currentScaleY) > 1e-6 ? 1.0 / qAbs(currentScaleY) : 1.0;
+    font.setPointSizeF(8 * scaleFactor); // 기본 8pt * 스케일 역수
+    painter->setFont(font);
+
+    MotorProfile* activeProfile = m_document ? m_document->activeProfile() : nullptr;
+
+    // --- X축 레이블 (기존과 동일) ---
+    double xLabelInterval = 0.5; // 500ms
+    double startXLabel = qFloor(rect.left() / xLabelInterval) * xLabelInterval;
+    for (double x = startXLabel; x < rect.right(); x += xLabelInterval) {
+        QString xLabel = QString::number(x, 'f', (qAbs(x - qRound(x)) < 1e-3) ? 0 : 1) + "s";
+        if (qAbs(x) > 1e-3 || qAbs(xLabelInterval - (qAbs(rect.left()) + qAbs(rect.right()))) < 1e-3) {
+             // 3번: Y축 반전 + 스케일 보정된 위치 계산
+             QRectF textRect(x - 50 * scaleFactor, 2 * scaleFactor, 100 * scaleFactor, 20 * scaleFactor);
+             painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, xLabel);
+        }
+    }
+
+    // --- Y축 레이블 (기존과 동일) ---
+    double yLabelInterval = m_gridSizeY; // 씬 좌표 10 간격
+    double startYLabel = qFloor(rect.top() / yLabelInterval) * yLabelInterval;
+    for (double y_scene = startYLabel; y_scene < rect.bottom(); y_scene += yLabelInterval) {
+        if (qAbs(y_scene) > 1e-3 || qAbs(yLabelInterval - (qAbs(rect.top()) + qAbs(rect.bottom()))) < 1e-3) {
+             QString label;
+             if (activeProfile) {
+                double y_real = activeProfile->getRealY(y_scene);
+                label = QString::number(y_real, 'f', 1);
+             } else {
+                label = QString::number(y_scene);
+             }
+             // 3번: Y축 반전 + 스케일 보정된 위치 계산
+             QRectF textRect(2 * scaleFactor, -y_scene - 10 * scaleFactor, 50 * scaleFactor, 20 * scaleFactor);
+             painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, label);
+        }
+    }
+
+    painter->restore();
+}
+
+// ... (파일의 나머지 부분은 변경 없음) ...
+
+2. motionmodels.cpp (수정)
+MotorProfile::checkAllNodes 함수에 기울기 제한 로직을 추가합니다.
+// motionmodels.cpp
+
+#include "motionmodels.h"
+// ... (다른 include들) ...
+#include <qmath.h> // qBound, qAbs, fmod, qFloor
+
+// ... (MotorProfile 생성자 및 다른 함수들) ...
+
+// 4번: 제약조건 적용 함수 (최대 기울기 로직 추가)
+void MotorProfile::checkAllNodes() {
+    bool dataWasChanged = false;
+    
+    // 첫 번째 패스: Y min/max 적용
+    for (int i = 0; i < m_nodes.size(); ++i) {
+        MotionNode node = m_nodes[i];
+        double oldY = node.y();
+        double clampedY = qBound(m_y_min, oldY, m_y_max);
+        
+        if (oldY != clampedY) {
+            node.setY(clampedY);
+            m_nodes[i] = node; 
+            dataWasChanged = true;
+        }
+    }
+    
+    // 두 번째 패스: 최대 기울기 적용 (0번 노드는 기준점이므로 1번부터 시작)
+    for (int i = 1; i < m_nodes.size(); ++i) {
+        MotionNode& prevNode = m_nodes[i-1];
+        MotionNode& currNode = m_nodes[i];
+        
+        double deltaX = currNode.x() - prevNode.x();
+        
+        // 두 노드의 X좌표가 같으면 기울기 계산 불가 (무시)
+        if (qAbs(deltaX) < 1e-6) {
+            continue; 
+        }
+        
+        double deltaY = currNode.y() - prevNode.y();
+        double currentSlope = deltaY / deltaX;
+        
+        // 최대 기울기(절댓값) 초과 검사
+        if (qAbs(currentSlope) > m_max_slope) {
+            // 최대 기울기에 맞춰 현재 노드(currNode)의 Y값 조정
+            double newDeltaY = qBound(-m_max_slope, currentSlope, m_max_slope) * deltaX;
+            double newY = prevNode.y() + newDeltaY;
+            
+            // 조정된 Y값이 min/max 범위 안에 있도록 다시 제한
+            newY = qBound(m_y_min, newY, m_y_max);
+            
+            if (qAbs(currNode.y() - newY) > 1e-6) {
+                currNode.setY(newY);
+                dataWasChanged = true;
+                qDebug() << "Node" << i << " adjusted for slope constraint. New Y:" << newY;
+            }
+        }
+    }
+
+    if (dataWasChanged) {
+        // sortNodes(); // Y값만 바뀌었으므로 정렬 불필요
+        emit dataChanged(); // 뷰 갱신
+    }
+}
+
+// ... (파일의 나머지 부분은 변경 없음) ...
+
+3. mainwindow.cpp (수정)
+onActiveMotorSwitched 함수 내에서 fitToActiveMotor 호출 부분을 다시 주석 처리합니다.
+// mainwindow.cpp
+
+// ... (includes) ...
+
+// ... (다른 함수들) ...
+
+// 1번: 뷰 변경(fit) 코드 주석 처리
+void MainWindow::onActiveMotorSwitched(MotorProfile* active, MotorProfile* previous) {
+    if (previous) {
+        disconnectProfileFromSpinBoxes(previous);
+    }
+    if (active) {
+        connectProfileToSpinBoxes(active);
+
+        m_motorTreeWidget->blockSignals(true);
+        for(int i=0; i < m_motorsRootItem->childCount(); ++i) {
+            QTreeWidgetItem* item = m_motorsRootItem->child(i);
+            MotorProfile* profile = item->data(0, Qt::UserRole).value<MotorProfile*>();
+            if(profile == active) {
+                m_motorTreeWidget->setCurrentItem(item);
+                break;
+            }
+        }
+        m_motorTreeWidget->blockSignals(false);
+
+        // 1번: 시점 변경 코드 주석 처리
+        // m_view->fitToActiveMotor(active);
+
+    } else {
+        // 1번: 시점 변경 코드 주석 처리
+        // m_view->fitToActiveMotor(nullptr);
+    }
+
+    onNodeSelected(nullptr);
+    m_undoStack->clear();
+}
+
+// ... (파일의 나머지 부분은 변경 없음) ...
+
+이 수정사항들을 적용하고 다시 빌드해 보세요. 👍
+
+
+
+
+
+
+
 네, 3가지 문제를 해결하도록 코드를 수정하겠습니다.
  * 패닝 방향 수정: grapheditorview.cpp의 mouseMoveEvent에서 수평 스크롤바 조작 코드를 제거하고, 수직 스크롤바 조작만 남겨 위아래 패닝만 가능하도록 합니다. (이전 요청에서 X축 중앙 고정을 위해 수평 패닝을 비활성화했었습니다.)
  * X축 비율 변경: grapheditorview.h에서 m_gridSizeX 기본값을 0.05 (50ms)로 변경하고, grapheditorview.cpp의 drawBackground에서 이 값을 사용하여 그리드를 그리도록 합니다. 레이블은 여전히 0.5초(500ms) 간격으로 표시됩니다.
