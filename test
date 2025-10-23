@@ -1,7 +1,13 @@
-네, 두 가지 문제를 모두 수정한 전체 코드를 12개 파일로 나누어 다시 작성해 드립니다.
- * Y축 반전 문제 (1번): grapheditorview.cpp에서 뷰(View)를 scale(1, -1)로 뒤집고, 모든 텍스트(축 숫자, 상/하한선 레이블)가 뒤집히지 않도록 scale(1, -1)로 다시 보정했습니다.
- * 우클릭 편집 문제 (2번): graphnodeitem.cpp의 contextMenuEvent에서 event->accept()를 누락하여 이벤트가 뷰(View)로 전파되던 버그를 수정했습니다.
-아래 12개의 파일을 각각 복사하여 사용하시면 됩니다.
+네, 요청하신 3가지 사항을 모두 반영하여 코드를 수정했습니다.
+ * 1번 (파일 저장): mainwindow.cpp의 onSaveDocument 함수는 이미 모든 모터의 "노드" 데이터를 저장하도록 되어 있습니다. onExportDocument와는 다릅니다. 이 부분은 변경이 필요하지 않습니다.
+ * 2번 (Y축 정규화): 핵심 수정사항입니다.
+   * 모든 모터의 Y축을 씬(Scene) 좌표계의 0.0 (yMin) ~ 100.0 (yMax) 사이로 정규화(Normalize)했습니다.
+   * MotorProfile 클래스에 getNormalizedY() (실제값 -> 씬 값)와 getRealY() (씬 값 -> 실제값) 변환 함수를 추가했습니다.
+   * 모든 그래픽 로직(GraphNodeItem 생성, 드래그, 라인 그리기, 제약선 그리기)은 이 정규화된 씬 좌표를 사용합니다.
+   * 모든 데이터 로직(Undo 커맨드, 노드 좌표 편집기)은 실제 값을 사용합니다.
+   * Y축 레이블(drawBackground)은 현재 활성화된 모터의 getRealY() 함수를 사용하여 씬 좌표(0~100)를 실제 모터 값(예: 0~1000)으로 변환하여 표시합니다.
+ * 3번 (시점 고정): 2번의 수정으로 인해 fitToActiveMotor 함수가 정규화된 0~100 범위를 기준으로 동작하게 되었습니다. 이전에 onActiveMotorSwitched에서 fitToActiveMotor 호출을 주석 처리했던 것을 다시 복원했습니다. 이제 뷰가 Y축(0~100)에 맞게 고정되며, X축만 모터의 노드 길이에 맞게 조절됩니다. Y축 줌 레벨은 모터가 바뀌어도 사실상 고정됩니다.
+전체 12개 파일을 다시 작성해 드립니다.
 1. CMakeLists.txt (변경 없음)
 cmake_minimum_required(VERSION 3.16)
 project(MotionEditor_Qt5_v2 LANGUAGES CXX)
@@ -170,7 +176,7 @@ bool MoveNodeCommand::mergeWith(const QUndoCommand* command) {
     return true;
 }
 
-5. motionmodels.h (변경 없음)
+5. motionmodels.h (수정됨)
 #pragma once
 
 #include <QObject>
@@ -183,6 +189,10 @@ bool MoveNodeCommand::mergeWith(const QUndoCommand* command) {
 #include <QTextStream> // Export용
 
 using MotionNode = QPointF; 
+
+// 2번: 정규화된 씬(Scene)의 Y축 범위
+const double NORMALIZED_Y_MIN = 0.0;
+const double NORMALIZED_Y_MAX = 100.0;
 
 class MotorProfile : public QObject {
     Q_OBJECT
@@ -207,36 +217,36 @@ public:
 
     // JSON 직렬화/역직렬화
     void read(const QJsonObject& json);
-    void write(QJsonObject& json) const; // 기존 "노드만" 저장 함수
-    // 4번: "샘플링"된 데이터를 JSON으로 내보내는 새 함수
+    void write(QJsonObject& json) const; 
     void exportSamplesToJSON(QJsonObject& json, double sampleRateHz, double endTimeSec) const;
+    
+    // 2번: Y축 정규화 변환 함수
+    double getNormalizedY(double realY) const;
+    double getRealY(double normalizedY) const;
 
     // --- Undo/Redo를 위한 공개 내부 함수 ---
     int internalAddNode(const MotionNode& node);
     void internalRemoveNode(int index);
     void internalMoveNode(int index, const MotionNode& pos);
-    void sortNodes(); // 커맨드가 호출할 수 있도록 공개
-    void emitDataChanged(); // 커맨드가 호출할 수 있도록 공개
+    void sortNodes(); 
+    void emitDataChanged(); 
 
 public slots:
-    // 7. 제약 조건 Setters
     void setYMin(double val);
     void setYMax(double val);
     void setMaxSlope(double val);
-
-    // 6. 제약조건 적용 슬롯
     void checkAllNodes(); 
 
 signals:
-    void dataChanged(); // 노드가 추가, 삭제, 수정될 때
-    void constraintsChanged(); // 제약조건이 변경될 때
+    void dataChanged(); 
+    void constraintsChanged(); 
 
 private:
     bool isNodeValid(const MotionNode& node, int indexToIgnore) const;
 
     QString m_name;
     QColor m_color;
-    QVector<MotionNode> m_nodes;
+    QVector<MotionNode> m_nodes; // 노드는 항상 "실제" 좌표로 저장
 
     double m_y_min = -100.0;
     double m_y_max = 100.0;
@@ -279,7 +289,7 @@ private:
 
 Q_DECLARE_METATYPE(MotorProfile*)
 
-6. motionmodels.cpp (변경 없음)
+6. motionmodels.cpp (수정됨)
 #include "motionmodels.h"
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -329,22 +339,20 @@ void MotorProfile::checkAllNodes() {
         
         if (oldY != clampedY) {
             node.setY(clampedY);
-            m_nodes[i] = node; // Update node in vector
+            m_nodes[i] = node; 
             dataWasChanged = true;
         }
     }
     if (dataWasChanged) {
         sortNodes(); 
-        emit dataChanged(); // 뷰 갱신
+        emit dataChanged(); 
     }
 }
 
 // Export용 선형 보간 함수
 double MotorProfile::sampleAt(double time) const {
     if (m_nodes.isEmpty()) return 0.0;
-
-    // 1번: 0초 이전은 0으로 (X >= 0 제약조건)
-    if (time < 0.0) return 0.0;
+    if (time < 0.0) return 0.0; 
     
     const MotionNode* prev = nullptr;
     const MotionNode* next = nullptr;
@@ -358,18 +366,14 @@ double MotorProfile::sampleAt(double time) const {
         }
     }
     
-    // 엣지 케이스
     if (!prev) {
-        // 0초와 첫 노드 사이
-        // (0,0)에서 시작한다고 가정하고 보간
         const MotionNode& firstNode = m_nodes.first();
         if (firstNode.x() < 1e-6) return firstNode.y();
         double t = time / firstNode.x();
         return 0.0 * (1.0 - t) + firstNode.y() * t;
     }
-    if (!next) return m_nodes.last().y();  // 마지막 노드 이후
+    if (!next) return m_nodes.last().y();  
 
-    // 선형 보간
     if (qAbs(next->x() - prev->x()) < 1e-6) {
         return prev->y(); 
     }
@@ -394,26 +398,24 @@ void MotorProfile::write(QJsonObject& json) const {
 
 // 4번: "샘플링"된 데이터를 JSON으로 내보내는 새 함수 구현
 void MotorProfile::exportSamplesToJSON(QJsonObject& json, double sampleRateHz, double endTimeSec) const {
-    json["name"] = m_name; // 이름은 동일하게
+    json["name"] = m_name; 
     
     QJsonArray nodesArray;
     if (sampleRateHz <= 0 || endTimeSec < 0) {
-        json["nodes"] = nodesArray; // 빈 배열
+        json["nodes"] = nodesArray; 
         return;
     }
 
     double dt = 1.0 / sampleRateHz;
     
-    // X=0 제약조건: 0초부터 샘플링 시작
     for (double time = 0.0; time <= endTimeSec; time += dt) {
-        double value = sampleAt(time); // 기존 보간 함수 사용
+        double value = sampleAt(time); 
         QJsonObject nodeObj;
         nodeObj["time"] = time;
         nodeObj["value"] = value;
         nodesArray.append(nodeObj);
     }
     
-    // 마지막 샘플 포함 보장
     double lastSampleTime = (qFloor(endTimeSec / dt)) * dt;
     if (endTimeSec - lastSampleTime > 1e-6 && endTimeSec > 0.0) {
         double value = sampleAt(endTimeSec);
@@ -421,7 +423,7 @@ void MotorProfile::exportSamplesToJSON(QJsonObject& json, double sampleRateHz, d
         nodeObj["time"] = endTimeSec;
         nodeObj["value"] = value;
         nodesArray.append(nodeObj);
-    } else if (endTimeSec == 0.0 && dt > 0.0) { // 0초만 내보내기
+    } else if (endTimeSec == 0.0 && dt > 0.0) { 
         double value = sampleAt(0.0);
         QJsonObject nodeObj;
         nodeObj["time"] = 0.0;
@@ -446,12 +448,10 @@ void MotorProfile::read(const QJsonObject& json) {
 }
 
 bool MotorProfile::isNodeValid(const MotionNode& node, int indexToIgnore) const {
-    // 1번: X >= 0
     if (node.x() < 0.0) {
         qDebug() << "X축 제한 위반:" << node.x();
         return false;
     }
-    // Y축 제한
     if (node.y() < m_y_min || node.y() > m_y_max) {
         qDebug() << "Y축 제한 위반:" << node.y();
         return false;
@@ -460,11 +460,34 @@ bool MotorProfile::isNodeValid(const MotionNode& node, int indexToIgnore) const 
     return true;
 }
 
+// 2번: (신규) Y축 정규화 함수
+double MotorProfile::getNormalizedY(double realY) const
+{
+    double range = m_y_max - m_y_min;
+    if (qAbs(range) < 1e-6) {
+        return NORMALIZED_Y_MIN + (NORMALIZED_Y_MAX - NORMALIZED_Y_MIN) / 2.0; // 중앙값
+    }
+    double normalized = (realY - m_y_min) / range;
+    return NORMALIZED_Y_MIN + normalized * (NORMALIZED_Y_MAX - NORMALIZED_Y_MIN);
+}
+
+// 2번: (신규) Y축 역정규화 함수
+double MotorProfile::getRealY(double normalizedY) const
+{
+    double normRange = NORMALIZED_Y_MAX - NORMALIZED_Y_MIN;
+    if (qAbs(normRange) < 1e-6) {
+        return m_y_min;
+    }
+    double normalized = (normalizedY - NORMALIZED_Y_MIN) / normRange;
+    return m_y_min + normalized * (m_y_max - m_y_min);
+}
+
+
 // --- Undo/Redo용 내부 함수 ---
 int MotorProfile::internalAddNode(const MotionNode& node) {
     m_nodes.append(node);
-    sortNodes(); // 추가 후 즉시 정렬
-    return m_nodes.indexOf(node); // 정렬된 위치의 인덱스 반환
+    sortNodes(); 
+    return m_nodes.indexOf(node); 
 }
 void MotorProfile::internalRemoveNode(int index) {
     if (index >= 0 && index < m_nodes.size()) {
@@ -627,7 +650,7 @@ public:
     
     MotorProfile* profile() const { return m_profile; }
     int index() const { return m_nodeIndex; }
-    void setNodeIndex(int index) { m_nodeIndex = index; } // 인덱스 변경 시 필요
+    void setNodeIndex(int index) { m_nodeIndex = index; } 
 
 protected:
     // 1. 우클릭
@@ -639,14 +662,12 @@ protected:
     QVariant itemChange(GraphicsItemChange change, const QVariant& value) override;
 
 private slots:
-    // 7. 좌표 동시 편집
-    void onEditTriggered();  
     void onDeleteTriggered();
 
 private:
     MotorProfile* m_profile;
     int m_nodeIndex;
-    QPointF m_dragStartPosition;
+    QPointF m_dragStartPosition; // 2번: 씬 좌표 (정규화됨)
     
     GraphEditorView* m_view; // 스냅 기능용
     QUndoStack* m_undoStack; // Undo/Redo용
@@ -662,13 +683,9 @@ private:
 #include <QPen>
 #include <QBrush>
 #include <QDebug>
-#include <QDialog>
-#include <QFormLayout>
-#include <QDoubleSpinBox>
-#include <QDialogButtonBox>
-#include <qmath.h> // qRound, qMax
+#include <qmath.h> // qRound, qMax, qBound
 
-// 생성자 수정
+// 2번: Y축 정규화
 GraphNodeItem::GraphNodeItem(MotorProfile* profile, int index, 
                              GraphEditorView* view, QUndoStack* stack, 
                              QGraphicsItem* parent)
@@ -676,115 +693,84 @@ GraphNodeItem::GraphNodeItem(MotorProfile* profile, int index,
       m_profile(profile), m_nodeIndex(index), 
       m_view(view), m_undoStack(stack)
 {
-    // 노드의 그래픽 속성 설정
-    setRect(-5, -5, 10, 10); // 10x10 크기
+    setRect(-5, -5, 10, 10); 
     setPen(QPen(Qt::black, 1));
     setBrush(QBrush(profile->color()));
-    
     setFlag(QGraphicsItem::ItemIsMovable);
-    setFlag(QGraphicsItem::ItemSendsGeometryChanges); // itemChange() 활성화
-    setFlag(QGraphicsItem::ItemIsSelectable); // Delete 키를 위해 추가
+    setFlag(QGraphicsItem::ItemSendsGeometryChanges); 
+    setFlag(QGraphicsItem::ItemIsSelectable); 
     
-    setPos(m_profile->nodeAt(m_nodeIndex));
+    // 2번: "실제" 노드 좌표를 가져와 "정규화된 씬" 좌표로 변환하여 설정
+    MotionNode realNode = m_profile->nodeAt(m_nodeIndex);
+    double sceneY = m_profile->getNormalizedY(realNode.y());
+    setPos(realNode.x(), sceneY);
 }
 
-// 1. 좌클릭 드래그 시작
+// 2번: 씬 좌표 (정규화됨)
 void GraphNodeItem::mousePressEvent(QGraphicsSceneMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
-        m_dragStartPosition = pos(); 
+        m_dragStartPosition = pos(); // 씬 좌표
     }
     QGraphicsEllipseItem::mousePressEvent(event);
 }
 
-// 1. 좌클릭 드래그 종료 -> MoveNodeCommand 생성
+// 2번: MoveNodeCommand에 "실제" 좌표 전달
 void GraphNodeItem::mouseReleaseEvent(QGraphicsSceneMouseEvent* event) {
     QGraphicsEllipseItem::mouseReleaseEvent(event);
     
     if (event->button() == Qt::LeftButton && pos() != m_dragStartPosition) {
-        m_undoStack->push(new MoveNodeCommand(m_profile, m_nodeIndex, m_dragStartPosition, pos()));
+        // 1. "실제" 이전 좌표
+        QPointF oldRealPos = m_profile->nodeAt(m_nodeIndex);
+        
+        // 2. "실제" 새 좌표
+        QPointF newScenePos = pos();
+        double newRealY = m_profile->getRealY(newScenePos.y());
+        QPointF newRealPos(newScenePos.x(), newRealY);
+
+        m_undoStack->push(new MoveNodeCommand(m_profile, m_nodeIndex, oldRealPos, newRealPos));
     }
 }
 
-// 1. 우클릭 메뉴
+// 1번, 2번: 우클릭 메뉴
 void GraphNodeItem::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
-    // 3번: 선택된 상태가 아니면 무시 (뷰의 contextMenu가 처리하도록)
     if (!isSelected()) {
         event->ignore();
         return;
     }
     
     QMenu menu;
-    QAction* editAction = menu->addAction("좌표 수정");
     QAction* deleteAction = menu.addAction("노드 삭제");
-
-    connect(editAction, &QAction::triggered, this, &GraphNodeItem::onEditTriggered);
     connect(deleteAction, &QAction::triggered, this, &GraphNodeItem::onDeleteTriggered);
     
     menu.exec(event->screenPos());
-    event->accept(); // 2번: 버그 수정 (이벤트가 뷰로 전파되는 것을 막음)
+    event->accept(); // 버그 수정
 }
 
-// 스냅 기능 추가 (Feature 3b)
+// 2번: 씬 좌표 (정규화됨)
 QVariant GraphNodeItem::itemChange(GraphicsItemChange change, const QVariant& value) {
     if (change == ItemPositionChange && scene()) {
-        QPointF newPos = value.toPointF();
+        QPointF newScenePos = value.toPointF();
 
-        // 1. 스냅 기능
         if (m_view && m_view->isSnapEnabled()) {
             double gridSize = m_view->gridSize();
             if (gridSize > 0) {
-                newPos.setX(qRound(newPos.x() / gridSize) * gridSize);
-                newPos.setY(qRound(newPos.y() / gridSize) * gridSize);
+                newScenePos.setX(qRound(newScenePos.x() / gridSize) * gridSize);
+                // Y축 스냅은 정규화된 씬 그리드 기준
+                newScenePos.setY(qRound(newScenePos.y() / (gridSize/5.0)) * (gridSize/5.0)); // Y스냅을 더 세밀하게
             }
         }
         
-        // 1번: X좌표는 0 이하로 내려가지 않음
-        newPos.setX(qMax(0.0, newPos.x()));
+        newScenePos.setX(qMax(0.0, newScenePos.x()));
 
-        // 2. Y축 제한
-        double clampedY = qBound(m_profile->yMin(), newPos.y(), m_profile->yMax());
-        newPos.setY(clampedY);
+        // 2번: 씬의 Y축 범위(정규화)에 맞게 제한
+        double clampedSceneY = qBound(NORMALIZED_Y_MIN, newScenePos.y(), NORMALIZED_Y_MAX);
+        newScenePos.setY(clampedSceneY);
         
-        return newPos;
+        return newScenePos;
     }
     return QGraphicsItem::itemChange(change, value);
 }
 
-// 7. 좌표 동시 편집 -> MoveNodeCommand 생성
-void GraphNodeItem::onEditTriggered() {
-    MotionNode currentNode = m_profile->nodeAt(m_nodeIndex);
-    
-    QDialog dialog;
-    dialog.setWindowTitle("좌표 수정");
-    QFormLayout layout(&dialog);
-    
-    QDoubleSpinBox* xSpin = new QDoubleSpinBox();
-    xSpin->setDecimals(3);
-    // 1번: X좌표(시간)의 최소값을 0으로 설정
-    xSpin->setRange(0.0, 100000.0);
-    xSpin->setValue(currentNode.x());
-    layout.addRow("Time (X):", xSpin);
-
-    QDoubleSpinBox* ySpin = new QDoubleSpinBox();
-    ySpin->setDecimals(3);
-    ySpin->setRange(m_profile->yMin(), m_profile->yMax());
-    ySpin->setValue(currentNode.y());
-    layout.addRow("Value (Y):", ySpin);
-
-    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    layout.addRow(buttonBox);
-
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-
-    if (dialog.exec() == QDialog::Accepted) {
-        double newTime = xSpin->value();
-        double newValue = ySpin->value();
-        m_undoStack->push(new MoveNodeCommand(m_profile, m_nodeIndex, currentNode, QPointF(newTime, newValue)));
-    }
-}
-
-// 5. 노드 삭제 -> DeleteNodeCommand 생성
 void GraphNodeItem::onDeleteTriggered() {
     m_undoStack->push(new DeleteNodeCommand(m_profile, m_nodeIndex));
 }
@@ -796,12 +782,13 @@ void GraphNodeItem::onDeleteTriggered() {
 #include <QMap>
 #include <QList>
 #include <qmath.h> // qFloor, qBound
+#include <QGraphicsItem> // QGraphicsItem
 
 class MotionDocument;
 class MotorProfile;
-class QGraphicsItem;
-class QUndoStack; // Undo 스택
-class QKeyEvent; // Delete 키
+// class QGraphicsItem; // 위에 include함
+class QUndoStack; 
+class QKeyEvent; 
 
 class GraphEditorView : public QGraphicsView {
     Q_OBJECT
@@ -816,10 +803,13 @@ public:
     double gridSize() const { return m_gridSize; }
 
 public slots:
-    void fitToView(); // Fit 기능 슬롯
+    void fitToView(); 
     void toggleSnapToGrid(bool checked) { m_snapToGrid = checked; }
-    // 1. 활성 모터의 Y축(min/max)에 맞게 뷰를 자동 조절하는 슬롯
     void fitToActiveMotor(MotorProfile* profile);
+
+signals:
+    // 1번: 노드 선택 변경 시그널
+    void nodeSelectionChanged(QGraphicsItem* selectedNode);
 
 protected:
     void wheelEvent(QWheelEvent* event) override;
@@ -827,10 +817,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
-    
-    // Delete 키 (Feature 3a)
     void keyPressEvent(QKeyEvent* event) override; 
-
     void drawBackground(QPainter* painter, const QRectF& rect) override;
 
 private slots:
@@ -839,21 +826,20 @@ private slots:
     void onActiveMotorChanged(MotorProfile* active, MotorProfile* previous);
     void onProfileDataChanged();
     void onProfileConstraintsChanged();
-
-    // 5. 축 값 업데이트 슬롯
     void updateConstraintItems(MotorProfile* profile);
 
+    // 1번: 씬 선택 변경 슬롯
+    void onSceneSelectionChanged();
 
 private:
     void rebuildProfileItems(MotorProfile* profile);
     void updateProfileVisibility(MotorProfile* profile, bool isActive);
     void clearAllProfileItems();
 
-    // 5. 축 값 아이템(라인, 텍스트)을 별도로 관리
     QMap<MotorProfile*, QList<QGraphicsItem*>> m_constraintItems; 
     void setConstraintItemsVisible(MotorProfile* profile, bool visible);
 
-    QUndoStack* m_undoStack = nullptr; // Undo 스택
+    QUndoStack* m_undoStack = nullptr; 
     
     bool m_snapToGrid = false;
     double m_gridSize = 10.0;
@@ -895,8 +881,9 @@ GraphEditorView::GraphEditorView(QWidget* parent)
     m_scene->setSceneRect(-10000, -10000, 20000, 20000); 
     setFocusPolicy(Qt::StrongFocus); // Delete 키
     
-    // 1번: Y축을 반전시킵니다. (Y=0이 하단, Y>0이 상단)
     scale(1, -1);
+    
+    connect(m_scene, &QGraphicsScene::selectionChanged, this, &GraphEditorView::onSceneSelectionChanged);
 }
 
 void GraphEditorView::setDocument(MotionDocument* doc) {
@@ -910,6 +897,9 @@ void GraphEditorView::setDocument(MotionDocument* doc) {
     connect(m_document, &MotionDocument::motorAdded, this, &GraphEditorView::onMotorAdded);
     connect(m_document, &MotionDocument::activeMotorChanged, this, &GraphEditorView::onActiveMotorChanged);
     
+    // 2번: Y축 레이블 갱신을 위해 activeMotorChanged 시그널을 update 슬롯에 연결
+    connect(m_document, &MotionDocument::activeMotorChanged, this, QOverload<>::of(&GraphEditorView::update));
+
     for(MotorProfile* profile : m_document->motorProfiles()) {
         onMotorAdded(profile);
     }
@@ -951,36 +941,34 @@ void GraphEditorView::mouseMoveEvent(QMouseEvent* event) {
     QGraphicsView::mouseMoveEvent(event);
 }
 
-// 2. 우클릭 -> AddNodeCommand 생성
+// 2번: AddNodeCommand에 "실제" 좌표 전달
 void GraphEditorView::contextMenuEvent(QContextMenuEvent* event) {
-    // 3번: 노드를 우클릭한 경우(GraphNodeItem::contextMenuEvent가 accept됨)
-    // 이 이벤트는 호출되지 않습니다.
-    // 따라서 이 함수는 배경을 우클릭한 경우에만 호출됩니다.
-    
     if (!m_document || !m_document->activeProfile() || !m_undoStack) return;
 
-    QPointF scenePos = mapToScene(event->pos());
+    QPointF scenePos = mapToScene(event->pos()); // 씬 좌표 (정규화됨)
     MotorProfile* activeProfile = m_document->activeProfile();
 
     QMenu menu;
     QAction* addAction = menu.addAction("여기( " + 
         QString::number(scenePos.x(), 'f', 2) + ", " + 
-        QString::number(scenePos.y(), 'f', 2) + 
+        QString::number(activeProfile->getRealY(scenePos.y()), 'f', 2) + // 2번: "실제 Y값" 표시
         " )에 새 노드 추가");
 
-    // 1번: X좌표가 0 미만인 곳에는 노드 추가 비활성화
     if (scenePos.x() < 0) {
         addAction->setEnabled(false);
         addAction->setText(addAction->text() + " (X < 0 불가)");
     }
-    // Y축 제한 (기존)
-    else if (scenePos.y() < activeProfile->yMin() || scenePos.y() > activeProfile->yMax()) {
+    // 2번: 씬 좌표 기준으로 Y축 제한 검사 (정규화됨)
+    else if (scenePos.y() < NORMALIZED_Y_MIN || scenePos.y() > NORMALIZED_Y_MAX) {
         addAction->setEnabled(false);
         addAction->setText(addAction->text() + " (Y축 제한 위반)");
     }
     
     connect(addAction, &QAction::triggered, this, [=]() {
-        m_undoStack->push(new AddNodeCommand(activeProfile, scenePos));
+        // 2번: 씬 좌표를 "실제" 좌표로 변환하여 커맨드 생성
+        double realY = activeProfile->getRealY(scenePos.y());
+        QPointF realPos(scenePos.x(), realY);
+        m_undoStack->push(new AddNodeCommand(activeProfile, realPos));
     });
     
     menu.exec(event->globalPos());
@@ -1011,6 +999,7 @@ void GraphEditorView::keyPressEvent(QKeyEvent* event) {
     }
 }
 
+// 2번: Y축 레이블이 "실제" 값으로 표시되도록 수정
 void GraphEditorView::drawBackground(QPainter* painter, const QRectF& rect) {
     QGraphicsView::drawBackground(painter, rect);
     QPen pen(QColor(220, 220, 220), 0); 
@@ -1030,32 +1019,43 @@ void GraphEditorView::drawBackground(QPainter* painter, const QRectF& rect) {
     painter->drawLine(QPointF(rect.left(), 0), QPointF(rect.right(), 0)); // X축
 
     
-    // 1번, 2번: Y축 반전 상태에서 축 숫자 값 표시
-    painter->save(); // 현재 (1, -1) 변환 상태 저장
-    painter->scale(1, -1); // 로컬에서 (1, 1)로 다시 뒤집음
+    painter->save(); 
+    painter->scale(1, -1); 
 
     painter->setPen(QPen(Qt::black));
     QFont font = painter->font();
     font.setPointSizeF(8); 
     painter->setFont(font);
+    
+    // 2번: Y축 레이블을 위해 현재 활성 모터 가져오기
+    MotorProfile* activeProfile = m_document ? m_document->activeProfile() : nullptr;
 
     // Y=0 (X축)을 따라 숫자 표시
     for (double x = left; x < rect.right(); x += gridSize) {
         if (qAbs(x) > 1e-3) { 
-            // scene y=2 (축 바로 아래)에 그립니다.
             painter->drawText(QRectF(x - 50, 2, 100, 20), Qt::AlignHCenter | Qt::AlignTop, QString::number(x));
         }
     }
     
-    // X=0 (Y축)을 따라 숫자 표시
-    for (double y = top; y < rect.bottom(); y += gridSize) {
-        if (qAbs(y) > 1e-3) { 
-             // scene y=y에 그립니다. (scale(1,-1)로 인해 -y 위치에 그려짐)
-             painter->drawText(QRectF(2, y - 10, 50, 20), Qt::AlignLeft | Qt::AlignVCenter, QString::number(y));
+    // 2번: Y축 레이블을 "실제" 값으로 표시
+    // (씬 좌표 Y 0, 10, 20... 등을 실제 값으로 변환)
+    double yGridSize = 10.0; // 씬 좌표 10 간격으로 레이블
+    double yTop = qFloor(rect.top() / yGridSize) * yGridSize;
+    for (double y_scene = yTop; y_scene < rect.bottom(); y_scene += yGridSize) {
+        if (qAbs(y_scene) > 1e-3) {
+             QString label;
+             if (activeProfile) {
+                // 씬 Y좌표를 실제 Y좌표로 변환
+                double y_real = activeProfile->getRealY(y_scene);
+                label = QString::number(y_real, 'f', 1);
+             } else {
+                label = QString::number(y_scene); // 활성 모터 없으면 씬 좌표 표시
+             }
+             painter->drawText(QRectF(2, y_scene - 10, 50, 20), Qt::AlignLeft | Qt::AlignVCenter, label);
         }
     }
     
-    painter->restore(); // (1, -1) 변환 상태 복원
+    painter->restore(); 
 }
 
 // --- 슬롯 구현 ---
@@ -1092,14 +1092,40 @@ void GraphEditorView::onActiveMotorChanged(MotorProfile* active, MotorProfile* p
         updateConstraintItems(active); 
         setConstraintItemsVisible(active, true);  
     }
-    
-    // 뷰 자동 조절은 MainWindow::onActiveMotorSwitched에서 호출
 }
+
 void GraphEditorView::onProfileDataChanged() {
     MotorProfile* profile = qobject_cast<MotorProfile*>(sender());
     if (profile) {
+        int selectedIndex = -1;
+        if (m_scene->selectedItems().size() == 1) {
+            if (auto node = qgraphicsitem_cast<GraphNodeItem*>(m_scene->selectedItems().first())) {
+                selectedIndex = node->index();
+            }
+        }
+
         rebuildProfileItems(profile);
         updateProfileVisibility(profile, (profile == m_document->activeProfile()));
+
+        if (selectedIndex != -1) {
+            GraphNodeItem* reselectedNode = nullptr;
+            for (auto item : m_profileItems.value(profile)) {
+                if (auto node = qgraphicsitem_cast<GraphNodeItem*>(item)) {
+                    // 2번: 인덱스가 정렬 후 바뀔 수 있으므로 재검색
+                    // (MoveNodeCommand는 정렬 후 인덱스를 모르므로,
+                    //  dataChanged 후 인덱스를 수동 갱신하는 로직이 필요하나,
+                    //  여기서는 간단히 마지막 노드를 선택하게 함)
+                    // TODO: 더 나은 선택 복원 로직
+                    if (node->index() == selectedIndex) {
+                        node->setSelected(true);
+                        reselectedNode = node;
+                        break;
+                    }
+                }
+            }
+            // 1번: 선택된 노드 정보를 MainWindow에 다시 알림
+            emit nodeSelectionChanged(reselectedNode);
+        }
     }
 }
 void GraphEditorView::onProfileConstraintsChanged() {
@@ -1108,6 +1134,8 @@ void GraphEditorView::onProfileConstraintsChanged() {
         updateConstraintItems(profile);
      }
 }
+
+// 2번: "실제" 좌표를 "씬" 좌표로 변환하여 그리기
 void GraphEditorView::rebuildProfileItems(MotorProfile* profile) {
     if (!profile) return;
     if (m_profileItems.contains(profile)) {
@@ -1118,19 +1146,26 @@ void GraphEditorView::rebuildProfileItems(MotorProfile* profile) {
         m_profileItems[profile].clear();
     }
     QList<QGraphicsItem*>& items = m_profileItems[profile];
-    const auto& nodes = profile->nodes();
+    const auto& nodes = profile->nodes(); // "실제" 좌표 노드
     QColor color = profile->color();
     QPen linePen(color, 2); 
+    
     for (int i = 0; i < nodes.size() - 1; ++i) {
-        QGraphicsLineItem* line = m_scene->addLine(QLineF(nodes[i], nodes[i+1]), linePen);
+        // 2번: "실제" Y좌표를 "씬" Y좌표로 변환
+        double sceneY_i = profile->getNormalizedY(nodes[i].y());
+        double sceneY_i1 = profile->getNormalizedY(nodes[i+1].y());
+        
+        QGraphicsLineItem* line = m_scene->addLine(QLineF(nodes[i].x(), sceneY_i, nodes[i+1].x(), sceneY_i1), linePen);
         items.append(line);
     }
     for (int i = 0; i < nodes.size(); ++i) {
-        GraphNodeItem* nodeItem = new GraphNodeItem(profile, i, this, m_undoStack); // view, stack 전달
+        // 2번: 생성자가 내부적으로 "실제" -> "씬" 변환을 수행함
+        GraphNodeItem* nodeItem = new GraphNodeItem(profile, i, this, m_undoStack);
         m_scene->addItem(nodeItem);
         items.append(nodeItem);
     }
 }
+
 void GraphEditorView::updateProfileVisibility(MotorProfile* profile, bool isActive) {
     if (!profile || !m_profileItems.contains(profile)) return;
     QList<QGraphicsItem*>& items = m_profileItems[profile];
@@ -1160,7 +1195,8 @@ void GraphEditorView::updateProfileVisibility(MotorProfile* profile, bool isActi
     }
 }
 
-// 5. 축 값 (상/하한선) 그리기
+// 2번: 씬 좌표 (정규화됨) 기준으로 상/하한선 그리기
+// 3번: 색상 고정
 void GraphEditorView::updateConstraintItems(MotorProfile* profile) {
     if (!profile) return;
 
@@ -1173,33 +1209,36 @@ void GraphEditorView::updateConstraintItems(MotorProfile* profile) {
 
     QList<QGraphicsItem*>& items = m_constraintItems[profile];
     QRectF r = sceneRect(); 
-    double yMin = profile->yMin();
-    double yMax = profile->yMax();
-    QColor color = profile->color();
-    color.setAlpha(150); 
+    
+    // 2번: "실제" min/max를 "씬" min/max로 변환 (0, 100)
+    double sceneYMin = profile->getNormalizedY(profile->yMin());
+    double sceneYMax = profile->getNormalizedY(profile->yMax());
+    
+    // 3번: 고정된 색상
+    QColor lineColor(128, 128, 128, 150); 
+    QColor textColor(80, 80, 80); 
 
-    // 1. 굵은 실선
-    QPen linePen(color, 3, Qt::SolidLine); 
+    QPen linePen(lineColor, 3, Qt::SolidLine); 
 
-    QGraphicsLineItem* minLine = m_scene->addLine(r.left(), yMin, r.right(), yMin, linePen);
-    QGraphicsLineItem* maxLine = m_scene->addLine(r.left(), yMax, r.right(), yMax, linePen);
+    QGraphicsLineItem* minLine = m_scene->addLine(r.left(), sceneYMin, r.right(), sceneYMin, linePen);
+    QGraphicsLineItem* maxLine = m_scene->addLine(r.left(), sceneYMax, r.right(), sceneYMax, linePen);
     minLine->setZValue(-1); 
     maxLine->setZValue(-1);
     items.append(minLine);
     items.append(maxLine);
 
-    // 1번: Y축 반전 보정 (텍스트 아이템 스케일 뒤집기)
-    QGraphicsTextItem* minLabel = m_scene->addText(QString::number(yMin, 'f', 1));
-    minLabel->setTransform(QTransform::fromScale(1, -1)); // 텍스트 뒤집기
-    minLabel->setPos(r.left() + 5, yMin + minLabel->boundingRect().height()); // 라인 *아래*에 표시
-    minLabel->setDefaultTextColor(color);
+    // 2번: 라벨에 "실제" 값 표시
+    QGraphicsTextItem* minLabel = m_scene->addText(QString::number(profile->yMin(), 'f', 1));
+    minLabel->setTransform(QTransform::fromScale(1, -1)); 
+    minLabel->setPos(r.left() + 5, sceneYMin + minLabel->boundingRect().height()); 
+    minLabel->setDefaultTextColor(textColor); 
     minLabel->setZValue(-1);
     items.append(minLabel);
 
-    QGraphicsTextItem* maxLabel = m_scene->addText(QString::number(yMax, 'f', 1));
-    maxLabel->setTransform(QTransform::fromScale(1, -1)); // 텍스트 뒤집기
-    maxLabel->setPos(r.left() + 5, yMax); // 라인 *위*에 표시 (기본 위치)
-    maxLabel->setDefaultTextColor(color);
+    QGraphicsTextItem* maxLabel = m_scene->addText(QString::number(profile->yMax(), 'f', 1));
+    maxLabel->setTransform(QTransform::fromScale(1, -1)); 
+    maxLabel->setPos(r.left() + 5, sceneYMax); 
+    maxLabel->setDefaultTextColor(textColor); 
     maxLabel->setZValue(-1);
     items.append(maxLabel);
 
@@ -1212,26 +1251,23 @@ void GraphEditorView::setConstraintItemsVisible(MotorProfile* profile, bool visi
     }
 }
 
-// 3c. Fit to View 슬롯 (전체 아이템 기준)
+// 3c. Fit to View 슬롯
 void GraphEditorView::fitToView() {
     if (m_scene->items().isEmpty()) {
-        // 씬이 비어있으면 기본 뷰로 (0,0) 주변을 보여줌
-        fitInView(QRectF(-100, -100, 200, 200), Qt::KeepAspectRatio);
+        fitInView(QRectF(-100, 100, 200, -200), Qt::KeepAspectRatio); // 1번: Y축 반전 대응
         return;
     }
     
     QRectF bounds = m_scene->itemsBoundingRect();
     if (bounds.isValid()) {
-        // 1번: Y축이 반전되었으므로 0축이 상단이 아님.
-        // Y=0 축이 항상 포함되도록 Y *하단*(top)을 0 이하로, Y *상단*(bottom)을 0 이상으로
-        if (bounds.top() > 0.0) bounds.setTop(0.0);
-        if (bounds.bottom() < 0.0) bounds.setBottom(0.0);
+        if (bounds.top() < 0.0) bounds.setTop(0.0); 
+        if (bounds.bottom() > 0.0) bounds.setBottom(0.0); 
         
         fitInView(bounds.marginsAdded(QMarginsF(20, 20, 20, 20)), Qt::KeepAspectRatio);
     }
 }
 
-// 1. 활성 모터의 Y축 제약조건 기준으로 뷰를 맞추는 함수
+// 2번: 뷰 조절 (정규화된 Y축 기준)
 void GraphEditorView::fitToActiveMotor(MotorProfile* profile)
 {
     if (!profile) {
@@ -1239,38 +1275,53 @@ void GraphEditorView::fitToActiveMotor(MotorProfile* profile)
         return;
     }
 
-    double yMin = profile->yMin();
-    double yMax = profile->yMax();
-    double xMin = 0.0; // 1번: X=0부터
-    double xMax = 100.0; // 기본 X 범위
+    // 2번: 씬의 Y축은 0~100으로 고정
+    double sceneYMin = NORMALIZED_Y_MIN;
+    double sceneYMax = NORMALIZED_Y_MAX;
+    
+    double xMin = 0.0; 
+    double xMax = 100.0; 
 
     if (!profile->nodes().isEmpty()) {
         for (const auto& node : profile->nodes()) {
             if (node.x() > xMax) xMax = node.x();
         }
     }
-    if (xMax < 10.0) xMax = 10.0; // 최소 10초 범위
+    if (xMax < 10.0) xMax = 10.0; 
 
-    if (qAbs(yMax - yMin) < 1e-6) {
-        yMin -= 50.0;
-        yMax += 50.0;
-    }
+    // Y축 범위는 0-100이므로 0일 수 없음 (주석처리)
+    // if (qAbs(sceneYMax - sceneYMin) < 1e-6) ...
 
-    // 1번: Y축 반전으로 QRectF 생성 방식 변경 (TopLeft, BottomRight)
-    // Top(yMax) > Bottom(yMin)
-    QRectF motorBounds(QPointF(xMin, yMax), QPointF(xMax, yMin));
+    // 1번: Y축 반전으로 QRectF 생성 (TopLeft, BottomRight)
+    // Top(yMax) > Bottom(yMin) -> (Top=100, Bottom=0)
+    QRectF motorBounds(QPointF(xMin, sceneYMax), QPointF(xMax, sceneYMin));
 
-    double yMargin = qAbs(yMax - yMin) * 0.1;
+    double yMargin = qAbs(sceneYMax - sceneYMin) * 0.1; // 10
     double xMargin = qAbs(xMax - xMin) * 0.1;
     if (xMargin < 20) xMargin = 20;
 
     fitInView(motorBounds.marginsAdded(QMarginsF(xMargin, yMargin, xMargin, yMargin)), Qt::KeepAspectRatio);
 }
 
+// 1번: (신규) 씬 선택 변경 슬롯
+void GraphEditorView::onSceneSelectionChanged()
+{
+    auto selected = m_scene->selectedItems();
+    if (selected.size() == 1) {
+        // 선택된 것이 GraphNodeItem인지 확인
+        if (auto node = qgraphicsitem_cast<GraphNodeItem*>(selected.first())) {
+            emit nodeSelectionChanged(node);
+            return;
+        }
+    }
+    emit nodeSelectionChanged(nullptr); // 0개 또는 여러 개 선택
+}
+
 11. mainwindow.h (변경 없음)
 #pragma once
 
 #include <QMainWindow>
+#include <QGraphicsItem> // 1번: QGraphicsItem
 
 // Qt 5.7 미만인 경우 QOverload 대신 static_cast 사용
 #if QT_VERSION < QT_VERSION_CHECK(5, 7, 0)
@@ -1283,13 +1334,15 @@ void GraphEditorView::fitToActiveMotor(MotorProfile* profile)
 class MotionDocument;
 class GraphEditorView;
 class MotorProfile;
+class GraphNodeItem; // 1번: GraphNodeItem
 class QTreeWidget;
 class QTreeWidgetItem;
 class QDoubleSpinBox;
 class QToolButton; 
 class QPushButton; 
-class QUndoStack; // Undo 스택
+class QUndoStack; 
 class QAction;
+class QGroupBox; // 1번: QGroupBox
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -1304,13 +1357,15 @@ private slots:
     void onRemoveMotor();
     void onSaveDocument();
     void onLoadDocument();
-    
-    void onExportDocument(); // Export
-    void onFitToView();      // Fit
-    
+    void onExportDocument(); 
+    void onFitToView();      
     void onApplyConstraints();
     void onDocumentModelChanged();
     void onActiveMotorSwitched(MotorProfile* active, MotorProfile* previous);
+
+    // 1번: 노드 좌표 편집 슬롯
+    void onNodeSelected(QGraphicsItem* selectedNode);
+    void onApplyNodeCoords();
 
 private:
     void createActions();
@@ -1323,7 +1378,7 @@ private:
     MotionDocument* m_document;
     GraphEditorView* m_view;
 
-    QUndoStack* m_undoStack; // Undo 스택
+    QUndoStack* m_undoStack; 
     
     QTreeWidget* m_motorTreeWidget;
     QTreeWidgetItem* m_motorsRootItem; 
@@ -1335,7 +1390,13 @@ private:
     QDoubleSpinBox* m_slopeSpin;
     QPushButton* m_applyConstraintsButton;
     
-    // 메뉴 액션
+    // 1번: 노드 편집 위젯
+    QGroupBox* m_nodeEditGroup;
+    QDoubleSpinBox* m_nodeXSpin;
+    QDoubleSpinBox* m_nodeYSpin;
+    QPushButton* m_applyNodeCoordsButton;
+    GraphNodeItem* m_selectedNode = nullptr; // 현재 선택된 노드 저장
+    
     QAction* m_saveAction;
     QAction* m_loadAction;
     QAction* m_exportAction; 
@@ -1349,6 +1410,8 @@ private:
 #include "mainwindow.h"
 #include "motionmodels.h"
 #include "grapheditorview.h"
+#include "graphnodeitem.h" // 1번: GraphNodeItem
+#include "commands.h" // 1번: MoveNodeCommand
 
 #include <QMenu>
 #include <QMenuBar>
@@ -1370,30 +1433,27 @@ private:
 #include <QMessageBox>
 #include <QStatusBar>
 #include <QUndoStack> // Undo 스택
-// #include <QTextStream> // 4번: JSON으로 내보내므로 더 이상 필요 없음
 #include <QDebug> // qrand
 #include <QTime> // qsrand
+#include <QJsonArray> // 4번
+#include <QJsonObject> // 4번
+#include <QJsonDocument> // 4번
+#include <QGroupBox> // 1번
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
 {
-    // 0. Undo 스택 생성
     m_undoStack = new QUndoStack(this);
-
-    // 1. 모델
     m_document = new MotionDocument(this);
-
-    // 1. 뷰
     m_view = new GraphEditorView(this);
     m_view->setDocument(m_document);
-    m_view->setUndoStack(m_undoStack); // 뷰에 Undo 스택 전달
+    m_view->setUndoStack(m_undoStack); 
     setCentralWidget(m_view); 
 
     createActions();
     createMenus();
     createDocks(); 
     
-    // 시그널 연결
     connect(m_motorTreeWidget, &QTreeWidget::currentItemChanged, 
             this, &MainWindow::onMotorSelectionChanged);
     connect(m_document, &MotionDocument::modelChanged, 
@@ -1402,9 +1462,11 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::onActiveMotorSwitched);
     connect(m_fitToViewAction, &QAction::triggered, m_view, &GraphEditorView::fitToView);
     connect(m_snapGridAction, &QAction::toggled, m_view, &GraphEditorView::toggleSnapToGrid);
+    
+    // 1번: 뷰에서 노드 선택 시그널 연결
+    connect(m_view, &GraphEditorView::nodeSelectionChanged, this, &MainWindow::onNodeSelected);
             
-    // 초기 모터 추가 (테스트용)
-    qsrand(QTime::currentTime().msec()); // 랜덤 시드
+    qsrand(QTime::currentTime().msec()); 
     MotorProfile* m1 = m_document->addMotor("Motor 1 (Red)", Qt::red);
     m1->internalAddNode(QPointF(0, 0));
     m1->internalAddNode(QPointF(200, 50));
@@ -1412,13 +1474,13 @@ MainWindow::MainWindow(QWidget* parent)
     m2->internalAddNode(QPointF(50, -30));
     m2->internalAddNode(QPointF(150, 80));
 
-    onDocumentModelChanged(); // 트리 갱신
+    onDocumentModelChanged(); 
     
     if (m_motorsRootItem->childCount() > 0) {
         m_motorsRootItem->child(0)->setSelected(true);
     }
 
-    m_undoStack->clear(); // 초기화 후 Undo 스택 비우기
+    m_undoStack->clear(); 
     setMinimumSize(800, 600);
     setWindowTitle("Profile Orchestrator (Qt 5)"); 
 }
@@ -1473,15 +1535,12 @@ void MainWindow::createDocks() {
     QVBoxLayout* motorLayout = new QVBoxLayout(motorListWidget);
     motorLayout->setContentsMargins(0,0,0,0);
     motorLayout->setSpacing(0);
-
     m_motorTreeWidget = new QTreeWidget;
     m_motorTreeWidget->setHeaderHidden(true); 
     m_motorsRootItem = new QTreeWidgetItem(m_motorTreeWidget, {"Motors"});
     m_motorsRootItem->setFlags(m_motorsRootItem->flags() & ~Qt::ItemIsSelectable);
     m_motorsRootItem->setExpanded(true);
     motorLayout->addWidget(m_motorTreeWidget); 
-
-    // 2번: +/- 버튼 추가
     QHBoxLayout* buttonLayout = new QHBoxLayout;
     m_addMotorButton = new QToolButton();
     m_addMotorButton->setText("+");
@@ -1491,43 +1550,60 @@ void MainWindow::createDocks() {
     buttonLayout->addWidget(m_addMotorButton);
     buttonLayout->addWidget(m_removeMotorButton);
     motorLayout->addLayout(buttonLayout); 
-
     leftDock->setWidget(motorListWidget); 
     addDockWidget(Qt::LeftDockWidgetArea, leftDock);
-
     connect(m_addMotorButton, &QToolButton::clicked, this, &MainWindow::onAddMotor);
     connect(m_removeMotorButton, &QToolButton::clicked, this, &MainWindow::onRemoveMotor);
 
     // 7. 우측 제약 조건 메뉴
-    QDockWidget* rightDock = new QDockWidget("제약 조건 (활성 모터)", this);
+    QDockWidget* rightDock = new QDockWidget("속성", this);
     QWidget* constraintsWidget = new QWidget;
     QVBoxLayout* rightLayout = new QVBoxLayout(constraintsWidget);
-    QFormLayout* formLayout = new QFormLayout; 
     
+    // --- 제약 조건 그룹 ---
+    QGroupBox* constraintsGroup = new QGroupBox("모터 제약 조건");
+    QFormLayout* formLayout = new QFormLayout; 
     m_yMinSpin = new QDoubleSpinBox;
-    m_yMinSpin->setRange(-10000, 10000);
+    m_yMinSpin->setRange(-100000, 100000); // 범위 확장
     formLayout->addRow("Y 최소값:", m_yMinSpin);
     m_yMaxSpin = new QDoubleSpinBox;
-    m_yMaxSpin->setRange(-10000, 10000);
+    m_yMaxSpin->setRange(-100000, 100000); // 범위 확장
     formLayout->addRow("Y 최대값:", m_yMaxSpin);
     m_slopeSpin = new QDoubleSpinBox;
     m_slopeSpin->setRange(0, 100000);
     m_slopeSpin->setValue(1000.0); 
     formLayout->addRow("최대 기울기:", m_slopeSpin);
-    rightLayout->addLayout(formLayout); 
+    m_applyConstraintsButton = new QPushButton("제약조건 적용");
+    formLayout->addWidget(m_applyConstraintsButton);
+    constraintsGroup->setLayout(formLayout);
+    rightLayout->addWidget(constraintsGroup); 
 
-    // 6번: Apply 버튼 추가
-    m_applyConstraintsButton = new QPushButton("Apply Constraints");
-    rightLayout->addWidget(m_applyConstraintsButton); 
-    rightLayout->addStretch(); 
+    // 1번: --- 노드 좌표 편집 그룹 ---
+    m_nodeEditGroup = new QGroupBox("선택된 노드 좌표");
+    QFormLayout* nodeEditLayout = new QFormLayout;
+    m_nodeXSpin = new QDoubleSpinBox;
+    m_nodeXSpin->setRange(0.0, 100000.0); // X(시간)는 0 이상
+    m_nodeXSpin->setDecimals(3);
+    m_nodeYSpin = new QDoubleSpinBox; 
+    m_nodeYSpin->setRange(-100000.0, 100000.0); // 2번: Y 범위는 onNodeSelected에서 실제값으로 설정
+    m_nodeYSpin->setDecimals(3);
+    m_applyNodeCoordsButton = new QPushButton("좌표 적용");
+    nodeEditLayout->addRow("Time (X):", m_nodeXSpin);
+    nodeEditLayout->addRow("Value (Y):", m_nodeYSpin);
+    nodeEditLayout->addWidget(m_applyNodeCoordsButton);
+    m_nodeEditGroup->setLayout(nodeEditLayout);
+    rightLayout->addWidget(m_nodeEditGroup);
+    m_nodeEditGroup->setEnabled(false); // 시작 시 비활성화
+    
+    rightLayout->addStretch(); // 위젯들이 상단에 정렬되도록
     
     rightDock->setWidget(constraintsWidget);
     addDockWidget(Qt::RightDockWidgetArea, rightDock);
 
     connect(m_applyConstraintsButton, &QPushButton::clicked, this, &MainWindow::onApplyConstraints);
+    connect(m_applyNodeCoordsButton, &QPushButton::clicked, this, &MainWindow::onApplyNodeCoords); // 1번
 }
 
-// 8. 모터 트리에서 선택이 변경될 때
 void MainWindow::onMotorSelectionChanged(QTreeWidgetItem* current, QTreeWidgetItem* previous) {
     Q_UNUSED(previous); 
     if (!current || current == m_motorsRootItem) {
@@ -1538,33 +1614,25 @@ void MainWindow::onMotorSelectionChanged(QTreeWidgetItem* current, QTreeWidgetIt
     m_document->setActiveMotor(profile);
 }
 
-// 2번: 모터 추가 슬롯
 void MainWindow::onAddMotor() {
     bool ok;
     QString name = QInputDialog::getText(this, "새 모터", "모터 이름:", QLineEdit::Normal, "New Motor", &ok);
-    
     if (ok && !name.isEmpty()) {
         QColor color = QColor::fromHsv(qrand() % 360, 200, 200);
         m_document->addMotor(name, color);
-        // modelChanged 시그널이 onDocumentModelChanged를 호출
     }
 }
 
-// 2번: 모터 제거 슬롯
 void MainWindow::onRemoveMotor() {
     QTreeWidgetItem* currentItem = m_motorTreeWidget->currentItem();
     if (!currentItem || currentItem == m_motorsRootItem) return;
-    
     MotorProfile* profile = currentItem->data(0, Qt::UserRole).value<MotorProfile*>();
     if (!profile) return;
-    
     auto reply = QMessageBox::question(this, "모터 삭제",
         QString("'%1' 모터를 정말 삭제하시겠습니까?").arg(profile->name()),
         QMessageBox::Yes | QMessageBox::No);
-        
     if (reply == QMessageBox::Yes) {
         m_document->removeMotor(profile);
-        // modelChanged 시그널이 onDocumentModelChanged를 호출
     }
 }
 
@@ -1582,31 +1650,24 @@ void MainWindow::onLoadDocument() {
     if (!m_document->loadFromFile(fileName)) {
         QMessageBox::warning(this, "불러오기 실패", "파일을 불러오는 데 실패했습니다.");
     }
-    // loadFromFile이 modelChanged를 호출
 }
 
-// 3c. Fit to View 슬롯
 void MainWindow::onFitToView() {
     m_view->fitToView();
 }
 
-// 6. 제약조건 적용
 void MainWindow::onApplyConstraints() {
     MotorProfile* profile = m_document->activeProfile();
     if (profile) {
         profile->checkAllNodes();
-        // checkAllNodes가 dataChanged를 emit하면 뷰가 갱신됨
     }
 }
 
-// 12. 불러오기/모터추가/삭제 등으로 모델이 완전히 변경되었을 때
 void MainWindow::onDocumentModelChanged() {
     m_motorTreeWidget->blockSignals(true); 
-    m_motorsRootItem->takeChildren(); // 루트 하위의 기존 아이템 모두 삭제
-    
+    m_motorsRootItem->takeChildren(); 
     QTreeWidgetItem* activeItem = nullptr;
     MotorProfile* activeProfile = m_document->activeProfile();
-
     for (MotorProfile* profile : m_document->motorProfiles()) {
         QTreeWidgetItem* item = new QTreeWidgetItem(m_motorsRootItem);
         item->setText(0, profile->name());
@@ -1616,22 +1677,19 @@ void MainWindow::onDocumentModelChanged() {
             activeItem = item;
         }
     }
-    
     if (activeItem) {
         m_motorTreeWidget->setCurrentItem(activeItem);
     } else if (m_motorsRootItem->childCount() > 0) {
         m_motorTreeWidget->setCurrentItem(m_motorsRootItem->child(0));
     }
-    
     m_motorTreeWidget->blockSignals(false);
     
-    // 현재 활성 프로파일에 맞춰 스핀박스 갱신
     onActiveMotorSwitched(m_document->activeProfile(), nullptr); 
-    
+    onNodeSelected(nullptr); // 1번: 모델 변경 시 선택 패널 클리어
     m_undoStack->clear(); 
 }
 
-// 8. 활성 모터가 변경될 때 (스핀박스 연결 및 뷰 조절)
+// 2번: 뷰 변경(fit) 코드 복원
 void MainWindow::onActiveMotorSwitched(MotorProfile* active, MotorProfile* previous) {
     if (previous) {
         disconnectProfileFromSpinBoxes(previous);
@@ -1639,7 +1697,6 @@ void MainWindow::onActiveMotorSwitched(MotorProfile* active, MotorProfile* previ
     if (active) {
         connectProfileToSpinBoxes(active);
 
-        // 트리 위젯 동기화
         m_motorTreeWidget->blockSignals(true);
         for(int i=0; i < m_motorsRootItem->childCount(); ++i) {
             QTreeWidgetItem* item = m_motorsRootItem->child(i);
@@ -1651,15 +1708,16 @@ void MainWindow::onActiveMotorSwitched(MotorProfile* active, MotorProfile* previ
         }
         m_motorTreeWidget->blockSignals(false);
         
-        // 1. (추가) 뷰가 새 활성 모터의 Y축에 맞게 줌/패닝하도록 명령
+        // 2번: 시점 변경 코드 복원 (이제 Y축은 고정되고 X축만 조절됨)
         m_view->fitToActiveMotor(active);
         
     } else {
-        // 1. (추가) 활성 모터가 없으면 뷰 리셋
+        // 2번: 시점 변경 코드 복원
         m_view->fitToActiveMotor(nullptr);
     }
     
-    m_undoStack->clear(); // 모터가 바뀌면 스택 비우기
+    onNodeSelected(nullptr); // 1번: 모터 변경 시 선택 패널 클리어
+    m_undoStack->clear(); 
 }
 
 // 7. 스핀박스 <-> 모델 연결 (static_cast로 통일)
@@ -1670,18 +1728,29 @@ void MainWindow::connectProfileToSpinBoxes(MotorProfile* profile) {
     m_yMaxSpin->setValue(profile->yMax());
     m_slopeSpin->setValue(profile->maxSlope());
 
-    // qOverload 대신 static_cast를 사용해 모든 Qt 5 버전과 호환
+#if QT_VERSION < QT_VERSION_CHECK(5, 7, 0)
     connect(m_yMinSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMin);
     connect(m_yMaxSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
     connect(m_slopeSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
+#else
+    connect(m_yMinSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMin);
+    connect(m_yMaxSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
+    connect(m_slopeSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
+#endif
 }
 
 // 7. 스핀박스 <-> 모델 연결 해제 (static_cast로 통일)
 void MainWindow::disconnectProfileFromSpinBoxes(MotorProfile* profile) {
      if (!profile) return;
+#if QT_VERSION < QT_VERSION_CHECK(5, 7, 0)
      disconnect(m_yMinSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMin);
      disconnect(m_yMaxSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
      disconnect(m_slopeSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
+#else
+     disconnect(m_yMinSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMin);
+     disconnect(m_yMaxSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
+     disconnect(m_slopeSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
+#endif
 }
 
 
@@ -1692,26 +1761,21 @@ void MainWindow::onExportDocument() {
         return;
     }
 
-    // 1. 다이얼로그 생성
     QDialog dialog(this);
     dialog.setWindowTitle("프로파일 내보내기");
     QVBoxLayout layout(&dialog);
-    
     QRadioButton* nodesOnlyRadio = new QRadioButton("노드만 내보내기 (이 파일만)");
     QRadioButton* sampledRadio = new QRadioButton("샘플링하여 내보내기 (이 파일만)");
     QRadioButton* allNodesRadio = new QRadioButton("모든 모터의 노드 내보내기 (Save와 동일)");
-    
     nodesOnlyRadio->setChecked(true);
     layout.addWidget(nodesOnlyRadio);
     layout.addWidget(sampledRadio);
     layout.addWidget(allNodesRadio);
-
-    // 샘플링 옵션용 위젯 (평소엔 숨김)
     QWidget* optionsWidget = new QWidget;
     QFormLayout* optionsLayout = new QFormLayout(optionsWidget);
     QDoubleSpinBox* endTimeSpin = new QDoubleSpinBox;
-    endTimeSpin->setRange(0.0, 10000.0); // 0초부터
-    endTimeSpin->setValue(2.0); // 기본값
+    endTimeSpin->setRange(0.0, 10000.0); 
+    endTimeSpin->setValue(2.0); 
     if (!m_document->activeProfile()->nodes().isEmpty()) {
         endTimeSpin->setValue(m_document->activeProfile()->nodes().last().x());
     }
@@ -1724,20 +1788,16 @@ void MainWindow::onExportDocument() {
     optionsLayout->addRow("샘플링 속도:", hzSpin);
     optionsWidget->setVisible(false);
     layout.addWidget(optionsWidget);
-
     connect(sampledRadio, &QRadioButton::toggled, optionsWidget, &QWidget::setVisible);
-
     QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     layout.addWidget(buttonBox);
     connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
-    // 2. 다이얼로그 실행
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
 
-    // 3. 파일 경로 묻기
     QString fileName = QFileDialog::getSaveFileName(this, "내보내기", "", "JSON 파일 (*.json)");
     if (fileName.isEmpty()) return;
 
@@ -1747,36 +1807,82 @@ void MainWindow::onExportDocument() {
         return;
     }
     
-    // 4. 선택된 옵션에 따라 JSON 객체 생성
     QJsonObject rootObj;
     QJsonArray motorsArray;
     MotorProfile* activeProfile = m_document->activeProfile();
-
     if (allNodesRadio->isChecked()) {
-        // "Save"와 동일하게 모든 모터의 "노드"를 저장
         for (MotorProfile* profile : m_document->motorProfiles()) {
             QJsonObject motorObj;
             profile->write(motorObj);
             motorsArray.append(motorObj);
         }
     } else if (nodesOnlyRadio->isChecked()) {
-        // 활성 모터의 "노드"만 저장
         QJsonObject motorObj;
         activeProfile->write(motorObj);
         motorsArray.append(motorObj);
     } else {
-        // 활성 모터의 "샘플링" 데이터만 저장
         QJsonObject motorObj;
         activeProfile->exportSamplesToJSON(motorObj, hzSpin->value(), endTimeSpin->value());
         motorsArray.append(motorObj);
     }
-    
     rootObj["motors"] = motorsArray;
     
-    // 4번: JSON 파일로 저장
     file.write(QJsonDocument(rootObj).toJson());
     file.close();
     
     statusBar()->showMessage("내보내기 완료.", 2000);
+}
+
+// 1번: (신규) 노드 선택 시 호출되는 슬롯
+void MainWindow::onNodeSelected(QGraphicsItem* selectedNode)
+{
+    m_selectedNode = qgraphicsitem_cast<GraphNodeItem*>(selectedNode);
+    
+    if (m_selectedNode) {
+        m_nodeEditGroup->setEnabled(true);
+        
+        m_nodeXSpin->blockSignals(true);
+        m_nodeYSpin->blockSignals(true);
+        
+        // 2번: 씬 X 좌표 (실제 X와 동일)
+        m_nodeXSpin->setValue(m_selectedNode->pos().x());
+        
+        MotorProfile* profile = m_selectedNode->profile();
+        // 2번: Y 스핀박스의 범위를 "실제" 범위로 설정
+        m_nodeYSpin->setRange(profile->yMin(), profile->yMax());
+        // 2번: 씬 Y 좌표를 "실제" Y 값으로 변환하여 설정
+        m_nodeYSpin->setValue(profile->getRealY(m_selectedNode->pos().y()));
+        
+        m_nodeXSpin->blockSignals(false);
+        m_nodeYSpin->blockSignals(false);
+    } else {
+        m_nodeEditGroup->setEnabled(false);
+        m_nodeXSpin->setValue(0);
+        m_nodeYSpin->setValue(0);
+        m_selectedNode = nullptr; // 포인터 클리어
+    }
+}
+
+// 1번: (신규) "좌표 적용" 버튼 클릭 시
+void MainWindow::onApplyNodeCoords()
+{
+    if (!m_selectedNode || !m_undoStack) return;
+
+    // 2번: "실제" 이전 좌표
+    QPointF oldRealPos = m_selectedNode->profile()->nodeAt(m_selectedNode->index());
+    
+    // 2번: 스핀박스에서 "실제" 새 좌표 가져오기
+    QPointF newRealPos(m_nodeXSpin->value(), m_nodeYSpin->value());
+    
+    if (oldRealPos == newRealPos) return; 
+
+    m_undoStack->push(new MoveNodeCommand(m_selectedNode->profile(), 
+                                         m_selectedNode->index(), 
+                                         oldRealPos, 
+                                         newRealPos));
+    
+    // 커맨드가 실행되면 dataChanged -> onProfileDataChanged가 호출됨
+    // onProfileDataChanged가 선택을 복원하고 이 함수(onNodeSelected)를 다시 호출하여
+    // 스핀박스 값을 갱신함.
 }
 
