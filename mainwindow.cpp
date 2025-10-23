@@ -1,4 +1,4 @@
-#include "mainwindow.h"
+8#include "mainwindow.h"
 #include "motionmodels.h"
 #include "grapheditorview.h"
 
@@ -232,4 +232,32 @@ void MainWindow::disconnectProfileFromSpinBoxes(MotorProfile* profile) {
      disconnect(m_yMaxSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
      disconnect(m_slopeSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
 }
+
+
+
+
+
+// 7. 스핀박스 <-> 모델 연결 (Qt 5.7 미만 호환)
+void MainWindow::connectProfileToSpinBoxes(MotorProfile* profile) {
+    if (!profile) return;
+    
+    m_yMinSpin->setValue(profile->yMin());
+    m_yMaxSpin->setValue(profile->yMax());
+    m_slopeSpin->setValue(profile->maxSlope());
+
+    // Qt 5.7 미만: qOverload 대신 static_cast를 사용해 시그널 주소를 명시
+    connect(m_yMinSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMin);
+    connect(m_yMaxSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
+    connect(m_slopeSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
+}
+
+// 7. 스핀박스 <-> 모델 연결 해제 (Qt 5.7 미만 호환)
+void MainWindow::disconnectProfileFromSpinBoxes(MotorProfile* profile) {
+     if (!profile) return;
+     disconnect(m_yMinSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMin);
+     disconnect(m_yMaxSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setYMax);
+     disconnect(m_slopeSpin, static_cast<void (QDoubleSpinBox::*)(double)>(&QDoubleSpinBox::valueChanged), profile, &MotorProfile::setMaxSlope);
+}
+
+
 
