@@ -1,3 +1,172 @@
+네, 3가지 문제를 해결하도록 코드를 수정하겠습니다.
+ * 패닝 방향 수정: grapheditorview.cpp의 mouseMoveEvent에서 수평 스크롤바 조작 코드를 제거하고, 수직 스크롤바 조작만 남겨 위아래 패닝만 가능하도록 합니다. (이전 요청에서 X축 중앙 고정을 위해 수평 패닝을 비활성화했었습니다.)
+ * X축 비율 변경: grapheditorview.h에서 m_gridSizeX 기본값을 0.05 (50ms)로 변경하고, grapheditorview.cpp의 drawBackground에서 이 값을 사용하여 그리드를 그리도록 합니다. 레이블은 여전히 0.5초(500ms) 간격으로 표시됩니다.
+ * 모터 전환 시 화면 고정: mainwindow.cpp의 onActiveMotorSwitched 함수 내에서 m_view->fitToActiveMotor(active); 호출 부분을 주석 처리합니다.
+수정이 필요한 파일은 grapheditorview.h, grapheditorview.cpp, mainwindow.cpp 입니다. 아래 코드 블록에서 해당 파일들의 수정된 부분만 보여드립니다. 기존 코드를 열고 해당 부분을 찾아 교체하시면 됩니다.
+1. grapheditorview.h (수정)
+m_gridSizeX의 기본값을 변경합니다.
+// grapheditorview.h
+// ... (includes) ...
+
+class GraphEditorView : public QGraphicsView {
+    // ... (Q_OBJECT, public, signals, protected) ...
+
+private slots:
+    // ... (private slots) ...
+
+private:
+    // ... (private functions) ...
+    
+    // ... (m_constraintItems, m_undoStack, m_snapToGrid) ...
+
+    // 3번: X, Y 그리드 크기 분리 (X축 기본값 0.05로 변경)
+    double m_gridSizeX = 0.05; // 50ms (시간)
+    double m_gridSizeY = 10.0; // 정규화된 Y (0~100)
+    
+    // ... (m_scene, m_document, m_profileItems, m_isPanning, m_panStartPos) ...
+};
+
+2. grapheditorview.cpp (수정)
+mouseMoveEvent 함수와 drawBackground 함수를 수정합니다.
+mouseMoveEvent 함수 수정:
+수평 스크롤바 조작 코드가 없는지 확인하고, 수직 스크롤바만 조작하도록 합니다. (Y축 반전을 고려하여 + 가 아닌 - 를 사용해야 할 수 있습니다. 테스트 후 조정 필요)
+// grapheditorview.cpp
+
+// ... (includes) ...
+
+// ... (다른 함수들) ...
+
+// 1번, 2번: 수평 패닝 제한, 수직 패닝 방향 수정
+void GraphEditorView::mouseMoveEvent(QMouseEvent* event) {
+    if (m_isPanning) {
+        // 수평 스크롤바 조작 없음 (X=0 중앙 고정)
+        // verticalScrollBar()->setValue(verticalScrollBar()->value() - (event->pos().y() - m_panStartPos.y()));
+        // 1번: Y축 반전을 고려하여 (+) 로 변경 시도
+        verticalScrollBar()->setValue(verticalScrollBar()->value() + (event->pos().y() - m_panStartPos.y()));
+        m_panStartPos = event->pos();
+        event->accept();
+        return;
+    }
+    QGraphicsView::mouseMoveEvent(event);
+}
+
+// 3번: X축 간격 및 레이블 조정
+void GraphEditorView::drawBackground(QPainter* painter, const QRectF& rect) {
+    QGraphicsView::drawBackground(painter, rect);
+    QPen gridPen(QColor(220, 220, 220), 0);
+    gridPen.setCosmetic(true);
+    painter->setPen(gridPen);
+
+    // 3번: X축 그리드 (m_gridSizeX = 0.05 사용)
+    double left_x = qFloor(rect.left() / m_gridSizeX) * m_gridSizeX;
+    for (double x = left_x; x < rect.right(); x += m_gridSizeX) { // m_gridSizeX 간격
+        painter->drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
+    }
+    // Y축 그리드 (씬 좌표 10 간격)
+    double top_y = qFloor(rect.top() / m_gridSizeY) * m_gridSizeY;
+    for (double y = top_y; y < rect.bottom(); y += m_gridSizeY) {
+        painter->drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
+    }
+
+    // 축선
+    QPen axisPen(QColor(180, 180, 180), 0);
+    axisPen.setCosmetic(true);
+    painter->setPen(axisPen);
+    painter->drawLine(QPointF(0, rect.top()), QPointF(0, rect.bottom())); // Y축
+    painter->drawLine(QPointF(rect.left(), 0), QPointF(rect.right(), 0)); // X축
+
+
+    painter->save();
+    painter->scale(1, -1);
+
+    painter->setPen(QPen(Qt::black));
+    QFont font = painter->font();
+    font.setPointSizeF(8);
+    painter->setFont(font);
+
+    MotorProfile* activeProfile = m_document ? m_document->activeProfile() : nullptr;
+
+    // 3번: X축 레이블 (0.5초 = 500ms 간격)
+    double xLabelInterval = 0.5; // 500ms
+    double startXLabel = qFloor(rect.left() / xLabelInterval) * xLabelInterval;
+    for (double x = startXLabel; x < rect.right(); x += xLabelInterval) {
+        // 소수점 아래 0 제거 + 's' 단위 추가
+        QString xLabel = QString::number(x, 'f', (qAbs(x - qRound(x)) < 1e-3) ? 0 : 1) + "s";
+        if (qAbs(x) > 1e-3 || qAbs(xLabelInterval - (qAbs(rect.left()) + qAbs(rect.right()))) < 1e-3) {
+             painter->drawText(QRectF(x - 50, 2, 100, 20), Qt::AlignHCenter | Qt::AlignTop, xLabel);
+        }
+    }
+
+    // Y축 레이블 (씬 좌표 10 간격)
+    double yLabelInterval = m_gridSizeY;
+    double startYLabel = qFloor(rect.top() / yLabelInterval) * yLabelInterval;
+    for (double y_scene = startYLabel; y_scene < rect.bottom(); y_scene += yLabelInterval) {
+        if (qAbs(y_scene) > 1e-3 || qAbs(yLabelInterval - (qAbs(rect.top()) + qAbs(rect.bottom()))) < 1e-3) {
+             QString label;
+             if (activeProfile) {
+                double y_real = activeProfile->getRealY(y_scene);
+                label = QString::number(y_real, 'f', 1);
+             } else {
+                label = QString::number(y_scene);
+             }
+             painter->drawText(QRectF(2, -y_scene - 10, 50, 20), Qt::AlignLeft | Qt::AlignVCenter, label);
+        }
+    }
+
+    painter->restore();
+}
+
+// ... (파일의 나머지 부분은 변경 없음) ...
+
+3. mainwindow.cpp (수정)
+onActiveMotorSwitched 함수 내에서 fitToActiveMotor 호출 부분을 주석 처리합니다.
+// mainwindow.cpp
+
+// ... (includes) ...
+
+// ... (다른 함수들) ...
+
+// 3번: 뷰 변경(fit) 코드 주석 처리
+void MainWindow::onActiveMotorSwitched(MotorProfile* active, MotorProfile* previous) {
+    if (previous) {
+        disconnectProfileFromSpinBoxes(previous);
+    }
+    if (active) {
+        connectProfileToSpinBoxes(active);
+
+        m_motorTreeWidget->blockSignals(true);
+        for(int i=0; i < m_motorsRootItem->childCount(); ++i) {
+            QTreeWidgetItem* item = m_motorsRootItem->child(i);
+            MotorProfile* profile = item->data(0, Qt::UserRole).value<MotorProfile*>();
+            if(profile == active) {
+                m_motorTreeWidget->setCurrentItem(item);
+                break;
+            }
+        }
+        m_motorTreeWidget->blockSignals(false);
+
+        // 3번: 시점 변경 코드 주석 처리
+        // m_view->fitToActiveMotor(active);
+
+    } else {
+        // 3번: 시점 변경 코드 주석 처리
+        // m_view->fitToActiveMotor(nullptr);
+    }
+
+    onNodeSelected(nullptr);
+    m_undoStack->clear();
+}
+
+// ... (파일의 나머지 부분은 변경 없음) ...
+
+이 수정사항들을 적용하고 다시 빌드해 보세요. 👍
+
+
+
+
+
+
+
 
 네, 5가지 요청 사항을 모두 반영하여 코드를 수정하겠습니다.
  * 모터 전환 시 그래프 위치 고정: mainwindow.cpp의 onActiveMotorSwitched 함수에서 fitToActiveMotor 호출 부분을 주석 처리하여 뷰가 자동으로 변경되지 않도록 합니다.
