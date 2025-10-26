@@ -1,65 +1,73 @@
-#include "commands.h"
-#include <QDebug>
+#pragma once
 
-// --- AddNodeCommand ---
-AddNodeCommand::AddNodeCommand(MotorProfile* profile, const MotionNode& node, QUndoCommand* parent)
-    : QUndoCommand(parent), m_profile(profile), m_node(node), m_nodeIndex(-1) {
-    setText("노드 추가");
-}
+#include <QUndoCommand>
+#include <QPointF>
+#include <QList> // For MoveNodesCommand
+#include <QSet>    // <<< QSet 헤더 추가 >>>
+#include "motionmodels.h" // For MotionNode, MotorProfile
 
-void AddNodeCommand::redo() {
-    m_nodeIndex = m_profile->internalAddNode(m_node);
-    m_profile->emitDataChanged();
-}
+// --- AddNodeCommand (변경 없음) ---
+class AddNodeCommand : public QUndoCommand {
+public:
+    AddNodeCommand(MotorProfile* profile, const MotionNode& node, QUndoCommand* parent = nullptr);
+    void undo() override;
+    void redo() override;
+private:
+    MotorProfile* m_profile;
+    MotionNode m_node;
+    int m_nodeIndex = -1;
+};
 
-void AddNodeCommand::undo() {
-    if (m_nodeIndex != -1) {
-        m_profile->internalRemoveNode(m_nodeIndex);
-        m_profile->emitDataChanged();
-    }
-}
+// --- DeleteNodeCommand (변경 없음) ---
+class DeleteNodeCommand : public QUndoCommand {
+public:
+    DeleteNodeCommand(MotorProfile* profile, int index, QUndoCommand* parent = nullptr);
+    void undo() override;
+    void redo() override;
+private:
+    MotorProfile* m_profile;
+    MotionNode m_node;
+    int m_nodeIndex;
+};
 
-// --- DeleteNodeCommand ---
-DeleteNodeCommand::DeleteNodeCommand(MotorProfile* profile, int index, QUndoCommand* parent)
-    : QUndoCommand(parent), m_profile(profile), m_nodeIndex(index) {
-    m_node = m_profile->nodeAt(index);
-    setText("노드 삭제");
-}
+// --- MoveNodeCommand (단일 노드 이동용) (변경 없음) ---
+class MoveNodeCommand : public QUndoCommand {
+public:
+    MoveNodeCommand(MotorProfile* profile, int index, const QPointF& oldPos, const QPointF& newPos, QUndoCommand* parent = nullptr);
+    void undo() override;
+    void redo() override;
+    bool mergeWith(const QUndoCommand* command) override;
+    int id() const override { return 1234; }
 
-void DeleteNodeCommand::redo() {
-    m_profile->internalRemoveNode(m_nodeIndex);
-    m_profile->emitDataChanged();
-}
-
-void DeleteNodeCommand::undo() {
-    m_profile->internalAddNode(m_node);
-    m_profile->emitDataChanged();
-}
+private:
+    MotorProfile* m_profile;
+    int m_nodeIndex;
+    QPointF m_oldPos;
+    QPointF m_newPos;
+};
 
 
-// --- MoveNodeCommand ---
-MoveNodeCommand::MoveNodeCommand(MotorProfile* profile, int index, const QPointF& oldPos, const QPointF& newPos, QUndoCommand* parent)
-    : QUndoCommand(parent), m_profile(profile), m_nodeIndex(index), m_oldPos(oldPos), m_newPos(newPos) {
-    setText("노드 이동");
-}
+// --- MoveNodesCommand (다중 노드 이동용) ---
+class MoveNodesCommand : public QUndoCommand {
+public:
+    // Structure to hold move data for a single node
+    struct MoveData {
+        MotorProfile* profile;
+        int nodeIndex;
+        QPointF oldRealPos;
+        QPointF newRealPos;
+    };
 
-void MoveNodeCommand::redo() {
-    m_profile->internalMoveNode(m_nodeIndex, m_newPos);
-    m_profile->sortNodes();
-    m_profile->emitDataChanged();
-}
+    explicit MoveNodesCommand(const QList<MoveData>& moves, QUndoCommand* parent = nullptr);
 
-void MoveNodeCommand::undo() {
-    m_profile->internalMoveNode(m_nodeIndex, m_oldPos);
-    m_profile->sortNodes();
-    m_profile->emitDataChanged();
-}
+    void undo() override;
+    void redo() override;
 
-bool MoveNodeCommand::mergeWith(const QUndoCommand* command) {
-    const MoveNodeCommand* moveCommand = static_cast<const MoveNodeCommand*>(command);
-    if (moveCommand->id() != id() || moveCommand->m_nodeIndex != m_nodeIndex) {
-        return false;
-    }
-    m_newPos = moveCommand->m_newPos;
-    return true;
-}
+    // bool mergeWith(const QUndoCommand* command) override; // Merging multi-move not implemented
+    // int id() const override { return 5678; }
+
+private:
+    QList<MoveData> m_moves;
+    // Store unique profiles affected by this multi-move
+    QSet<MotorProfile*> m_affectedProfiles; // <<< 타입 명시 (QSet 헤더 필요)
+};
