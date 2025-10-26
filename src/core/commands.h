@@ -2,9 +2,11 @@
 
 #include <QUndoCommand>
 #include <QPointF>
-#include "motionmodels.h" // MotionNode, MotorProfile 사용
+#include <QList> // For MoveNodesCommand
+#include <QSet>    // <<< QSet 헤더 추가 >>>
+#include "motionmodels.h" // For MotionNode, MotorProfile
 
-// 1. 노드 추가 커맨드
+// --- AddNodeCommand (변경 없음) ---
 class AddNodeCommand : public QUndoCommand {
 public:
     AddNodeCommand(MotorProfile* profile, const MotionNode& node, QUndoCommand* parent = nullptr);
@@ -12,11 +14,11 @@ public:
     void redo() override;
 private:
     MotorProfile* m_profile;
-    MotionNode m_node; // 실제 좌표 (x: ms)
-    int m_nodeIndex;
+    MotionNode m_node;
+    int m_nodeIndex = -1;
 };
 
-// 2. 노드 삭제 커맨드
+// --- DeleteNodeCommand (변경 없음) ---
 class DeleteNodeCommand : public QUndoCommand {
 public:
     DeleteNodeCommand(MotorProfile* profile, int index, QUndoCommand* parent = nullptr);
@@ -24,11 +26,11 @@ public:
     void redo() override;
 private:
     MotorProfile* m_profile;
-    MotionNode m_node; // 실제 좌표 (x: ms)
+    MotionNode m_node;
     int m_nodeIndex;
 };
 
-// 3. 노드 이동 커맨드
+// --- MoveNodeCommand (단일 노드 이동용) (변경 없음) ---
 class MoveNodeCommand : public QUndoCommand {
 public:
     MoveNodeCommand(MotorProfile* profile, int index, const QPointF& oldPos, const QPointF& newPos, QUndoCommand* parent = nullptr);
@@ -40,6 +42,32 @@ public:
 private:
     MotorProfile* m_profile;
     int m_nodeIndex;
-    QPointF m_oldPos; // 실제 좌표 (x: ms)
-    QPointF m_newPos; // 실제 좌표 (x: ms)
+    QPointF m_oldPos;
+    QPointF m_newPos;
+};
+
+
+// --- MoveNodesCommand (다중 노드 이동용) ---
+class MoveNodesCommand : public QUndoCommand {
+public:
+    // Structure to hold move data for a single node
+    struct MoveData {
+        MotorProfile* profile;
+        int nodeIndex;
+        QPointF oldRealPos;
+        QPointF newRealPos;
+    };
+
+    explicit MoveNodesCommand(const QList<MoveData>& moves, QUndoCommand* parent = nullptr);
+
+    void undo() override;
+    void redo() override;
+
+    // bool mergeWith(const QUndoCommand* command) override; // Merging multi-move not implemented
+    // int id() const override { return 5678; }
+
+private:
+    QList<MoveData> m_moves;
+    // Store unique profiles affected by this multi-move
+    QSet<MotorProfile*> m_affectedProfiles; // <<< 타입 명시 (QSet 헤더 필요)
 };
