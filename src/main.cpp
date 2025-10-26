@@ -3,9 +3,14 @@
 
 int main(int argc, char *argv[])
 {
+    // Enable High DPI scaling
+    QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+
     QApplication a(argc, argv);
+
     MainWindow w;
-    w.setWindowTitle("Profile Orchestrator (Qt 5)");
-    w.show();
-    return a.exec();
+    w.show(); // Show the main window
+
+    return a.exec(); // Start event loop
 }
